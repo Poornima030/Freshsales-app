@@ -1,0 +1,10 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "build",
+  "framework": "create-react-app",
+  "functions": {
+    "api/gemini.js": {
+      "runtime": "nodejs18.x"
+    }
+  }
+}
