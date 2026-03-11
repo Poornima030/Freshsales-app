@@ -13,3 +13,8 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 export const db = getDatabase(app);
+```
+
+Then go to **Vercel → Settings → Environment Variables** and confirm `REACT_APP_FIREBASE_DATABASE_URL` is exactly:
+```
+https://freshsales-43a90-default-rtdb.firebaseio.com
