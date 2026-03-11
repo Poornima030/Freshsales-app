@@ -3,7 +3,6 @@ import { db } from './firebase';
 import { ref, push, set, remove, onValue } from 'firebase/database';
 import './App.css';
 
-// ── Validation ──────────────────────────────────────────
 function validateContact(c) {
   const errors = [];
   if (c.email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(c.email.trim())) {
@@ -12,28 +11,24 @@ function validateContact(c) {
   if (c.phone) {
     const digits = c.phone.replace(/[\s\-\(\)\+\.]/g, '');
     if (!/^\d{7,15}$/.test(digits)) {
-      errors.push(`Phone "${c.phone}" has unusual digit count (expected 7–15)`);
+      errors.push(`Phone "${c.phone}" has unusual digit count (expected 7-15)`);
     }
   }
   return errors;
 }
 
-// ── Contact Card ────────────────────────────────────────
 function ContactCard({ contact, onEdit, onDelete }) {
   const initials = (contact.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
   const role = [contact.title, contact.company].filter(Boolean).join(' · ') || '—';
   const dateStr = contact.created
     ? new Date(contact.created).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
     : '';
-
   return (
     <div className="contact-card">
       <span className={`contact-source ${contact.source === 'image' ? 'source-image' : 'source-text'}`}>
         {contact.source === 'image' ? '📷 Card' : '✏️ Text'}
       </span>
-      {contact.flagged && (
-        <div className="flagged-badge">⚠ Flagged — check email/phone</div>
-      )}
+      {contact.flagged && <div className="flagged-badge">⚠ Flagged — check email/phone</div>}
       <div className="contact-avatar">{initials}</div>
       <div className="contact-name">{contact.name || '—'}</div>
       <div className="contact-role">{role}</div>
@@ -53,17 +48,14 @@ function ContactCard({ contact, onEdit, onDelete }) {
   );
 }
 
-// ── Edit Modal ──────────────────────────────────────────
 function EditModal({ contact, onSave, onClose }) {
   const fields = ['name','title','company','email','phone','website','address','notes'];
   const [form, setForm] = useState({});
-
   useEffect(() => {
     const init = {};
     fields.forEach(f => { init[f] = contact[f] || ''; });
     setForm(init);
   }, [contact]);
-
   const handleSave = () => {
     const updated = {};
     fields.forEach(f => { updated[f] = form[f].trim() || null; });
@@ -71,28 +63,17 @@ function EditModal({ contact, onSave, onClose }) {
     if (errs.length) {
       if (!window.confirm('⚠️ Validation warning:\n\n' + errs.join('\n') + '\n\nSave anyway?')) return;
       updated.flagged = true;
-    } else {
-      updated.flagged = false;
-    }
+    } else { updated.flagged = false; }
     onSave(contact._key, { ...updated, source: contact.source, created: contact.created });
   };
-
   return (
     <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal-box">
-        <div className="modal-title">
-          Edit Contact
-          <button className="modal-close" onClick={onClose}>✕</button>
-        </div>
+        <div className="modal-title">Edit Contact<button className="modal-close" onClick={onClose}>✕</button></div>
         {fields.map(f => (
           <div className="field-group" key={f}>
             <label className="field-label">{f.charAt(0).toUpperCase() + f.slice(1)}</label>
-            <input
-              className="field-input"
-              value={form[f] || ''}
-              onChange={e => setForm({ ...form, [f]: e.target.value })}
-              type={f === 'email' ? 'email' : 'text'}
-            />
+            <input className="field-input" value={form[f] || ''} onChange={e => setForm({ ...form, [f]: e.target.value })} type={f === 'email' ? 'email' : 'text'} />
           </div>
         ))}
         <div className="modal-actions">
@@ -104,23 +85,21 @@ function EditModal({ contact, onSave, onClose }) {
   );
 }
 
-// ── Main App ────────────────────────────────────────────
 export default function App() {
-  const [contacts, setContacts]     = useState([]);
-  const [tab, setTab]               = useState('image');
-  const [file, setFile]             = useState(null);
-  const [preview, setPreview]       = useState(null);
-  const [text, setText]             = useState('');
-  const [loading, setLoading]       = useState(false);
-  const [toast, setToast]           = useState(null);
-  const [search, setSearch]         = useState('');
-  const [syncStatus, setSyncStatus] = useState('connecting');
+  const [contacts, setContacts]       = useState([]);
+  const [tab, setTab]                 = useState('image');
+  const [file, setFile]               = useState(null);
+  const [preview, setPreview]         = useState(null);
+  const [text, setText]               = useState('');
+  const [loading, setLoading]         = useState(false);
+  const [toast, setToast]             = useState(null);
+  const [search, setSearch]           = useState('');
+  const [syncStatus, setSyncStatus]   = useState('connecting');
   const [editContact, setEditContact] = useState(null);
-  const [dragging, setDragging]     = useState(false);
+  const [dragging, setDragging]       = useState(false);
   const fileRef = useRef();
   const contactsRef = ref(db, 'contacts');
 
-  // ── Firebase listener ──────────────────────────────
   useEffect(() => {
     const unsub = onValue(contactsRef, snap => {
       const list = [];
@@ -131,13 +110,11 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // ── Toast ──────────────────────────────────────────
   const showToast = (msg, type) => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4000);
   };
 
-  // ── File handling ──────────────────────────────────
   const loadFile = f => {
     if (!f || !f.type.startsWith('image/')) return;
     setFile(f);
@@ -150,32 +127,22 @@ export default function App() {
     loadFile(e.dataTransfer.files[0]);
   };
 
-  // ── Extract ────────────────────────────────────────
   const extract = async () => {
     if (tab === 'image' && !file) { showToast('Please upload an image', 'error'); return; }
     if (tab === 'text' && !text.trim()) { showToast('Please paste some text', 'error'); return; }
-
     setLoading(true);
     try {
       let body;
-      const prompt = 'Look at this and extract contact information. Return ONLY a valid JSON object with exactly these fields (null if not found), no markdown, no explanation: {"name":null,"title":null,"company":null,"email":null,"phone":null,"website":null,"address":null,"notes":null}';
-
       if (tab === 'image') {
-        const b64 = await new Promise((res, rej) => {
+        const b64 = await new Promise((resolve, reject) => {
           const reader = new FileReader();
-          reader.onload = e => res(e.target.result.split(',')[1]);
-          reader.onerror = rej;
+          reader.onload = e => resolve(e.target.result.split(',')[1]);
+          reader.onerror = reject;
           reader.readAsDataURL(file);
         });
-        body = {
-          contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: file.type, data: b64 } }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 512 }
-        };
+        body = { mode: 'image', imageData: b64, mimeType: file.type };
       } else {
-        body = {
-          contents: [{ parts: [{ text: prompt + '\n\nContact info:\n' + text }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 512 }
-        };
+        body = { mode: 'text', text };
       }
 
       const res = await fetch('/api/gemini', {
@@ -185,10 +152,9 @@ export default function App() {
       });
 
       const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
-      if (!data.candidates?.[0]) throw new Error('No response from Gemini');
+      if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
 
-      const raw = data.candidates[0].content.parts[0].text || '';
+      const raw = data.text || '';
       const match = raw.match(/\{[\s\S]*\}/);
       if (!match) throw new Error('Could not find JSON in response');
       const contact = JSON.parse(match[0]);
@@ -207,7 +173,6 @@ export default function App() {
 
       const newRef = push(contactsRef);
       await set(newRef, contact);
-
       showToast('Contact saved!', 'success');
       setFile(null); setPreview(null); setText('');
       if (fileRef.current) fileRef.current.value = '';
@@ -218,7 +183,6 @@ export default function App() {
     }
   };
 
-  // ── Edit / Delete ──────────────────────────────────
   const handleSaveEdit = async (key, updated) => {
     try {
       await set(ref(db, 'contacts/' + key), updated);
@@ -244,7 +208,6 @@ export default function App() {
     } catch { showToast('Clear failed', 'error'); }
   };
 
-  // ── Export CSV ─────────────────────────────────────
   const exportCSV = () => {
     if (!contacts.length) { showToast('No contacts to export', 'error'); return; }
     const fields = ['name','title','company','email','phone','website','address','notes','source','created'];
@@ -260,7 +223,6 @@ export default function App() {
     showToast('CSV downloaded!', 'success');
   };
 
-  // ── Filter ─────────────────────────────────────────
   const filtered = contacts.filter(c => {
     if (!search) return true;
     const q = search.toLowerCase();
@@ -270,10 +232,8 @@ export default function App() {
   const today = new Date().toDateString();
   const todayCount = contacts.filter(c => new Date(c.created).toDateString() === today).length;
 
-  // ── Render ─────────────────────────────────────────
   return (
     <div className="app">
-      {/* Header */}
       <header className="header">
         <div className="logo">Fresh<span>sales</span></div>
         <div className="stat-bar">
@@ -290,7 +250,6 @@ export default function App() {
       </header>
 
       <div className="main">
-        {/* Sidebar */}
         <aside className="sidebar">
           <div>
             <div className="section-title">Input Method</div>
@@ -307,7 +266,7 @@ export default function App() {
                 onDragOver={e => { e.preventDefault(); setDragging(true); }}
                 onDragLeave={() => setDragging(false)}
                 onDrop={onDrop}
-                onClick={() => fileRef.current?.click()}
+                onClick={() => fileRef.current && fileRef.current.click()}
               >
                 <input ref={fileRef} type="file" accept="image/*" style={{ display:'none' }} onChange={e => loadFile(e.target.files[0])} />
                 <div className="drop-icon">🪪</div>
@@ -333,7 +292,6 @@ export default function App() {
           </button>
         </aside>
 
-        {/* Contacts Panel */}
         <div className="right-panel">
           <div className="list-header">
             <div className="list-title">Contacts <span className="count-label">({filtered.length})</span></div>
@@ -343,7 +301,6 @@ export default function App() {
               <button className="btn-sm danger" onClick={handleClearAll}>🗑 Clear all</button>
             </div>
           </div>
-
           {filtered.length === 0 ? (
             <div className="empty-state">
               <div className="empty-icon">🪪</div>
@@ -359,7 +316,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Edit Modal */}
       {editContact && (
         <EditModal contact={editContact} onSave={handleSaveEdit} onClose={() => setEditContact(null)} />
       )}
