@@ -9,8 +9,9 @@ function validateContact(c) {
     errors.push(`Email "${c.email}" looks invalid`);
   }
   if (c.phone) {
-    const digits = c.phone.replace(/[\s\-\(\)\+\.]/g, '');
-    if (!/^\d{7,15}$/.test(digits)) {
+    const cleaned = c.phone.replace(/x\d+|ext\.?\d+/gi, '').trim();
+    const digits = cleaned.replace(/[\s\-\(\)\+\.]/g, '');
+    if (digits.length > 0 && !/^\d{7,15}$/.test(digits)) {
       errors.push(`Phone "${c.phone}" has unusual digit count (expected 7-15)`);
     }
   }
@@ -98,10 +99,10 @@ export default function App() {
   const [editContact, setEditContact] = useState(null);
   const [dragging, setDragging]       = useState(false);
   const fileRef = useRef();
-  const contactsRef = ref(db, 'contacts');
 
   useEffect(() => {
-    const unsub = onValue(contactsRef, snap => {
+    const dbRef = ref(db, 'contacts');
+    const unsub = onValue(dbRef, snap => {
       const list = [];
       snap.forEach(child => list.push({ ...child.val(), _key: child.key }));
       setContacts(list.reverse());
@@ -171,6 +172,7 @@ export default function App() {
         contact.flagged = true;
       }
 
+      const contactsRef = ref(db, 'contacts');
       const newRef = push(contactsRef);
       await set(newRef, contact);
       showToast('Contact saved!', 'success');
@@ -203,7 +205,7 @@ export default function App() {
     if (!contacts.length) return;
     if (!window.confirm('Delete ALL contacts? This cannot be undone.')) return;
     try {
-      await remove(contactsRef);
+      await remove(ref(db, 'contacts'));
       showToast('All contacts cleared', 'success');
     } catch { showToast('Clear failed', 'error'); }
   };
