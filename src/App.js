@@ -101,15 +101,21 @@ export default function App() {
   const fileRef = useRef();
 
   useEffect(() => {
-    const dbRef = ref(db, 'contacts');
-    const unsub = onValue(dbRef, snap => {
-      const list = [];
-      snap.forEach(child => list.push({ ...child.val(), _key: child.key }));
-      setContacts(list.reverse());
-      setSyncStatus('live');
-    }, () => setSyncStatus('offline'));
-    return () => unsub();
-  }, []);
+  const dbRef = ref(db, 'contacts');
+  const unsub = onValue(dbRef, snap => {
+    const list = [];
+    snap.forEach(child => {
+      list.push({ ...child.val(), _key: child.key });
+    });
+    setContacts(list.reverse());
+    setSyncStatus('live');
+    console.log('Firebase loaded:', list.length, 'contacts');
+  }, (error) => {
+    console.error('Firebase error:', error);
+    setSyncStatus('offline');
+  });
+  return () => unsub();
+}, []);
 
   const showToast = (msg, type) => {
     setToast({ msg, type });
