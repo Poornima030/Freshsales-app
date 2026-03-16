@@ -9,10 +9,15 @@
     {
       "src": "api/gemini.js",
       "use": "@vercel/node"
+    },
+    {
+      "src": "api/slack.js",
+      "use": "@vercel/node"
     }
   ],
   "routes": [
     { "src": "/api/gemini", "dest": "/api/gemini.js" },
+    { "src": "/api/slack", "dest": "/api/slack.js" },
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
