@@ -17,19 +17,16 @@ export default async function handler(req, res) {
       if (event.files && event.files.length > 0) {
         const file = event.files[0];
 
-        // Only process image files
         if (!file.mimetype?.startsWith('image/')) {
           return res.status(200).end();
         }
 
-        // Download image from Slack (needs bot token)
         const imageRes = await fetch(file.url_private, {
           headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
         });
         const imageBuffer = await imageRes.arrayBuffer();
         const base64Image = Buffer.from(imageBuffer).toString('base64');
 
-        // Send to Groq vision AI
         const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
           headers: {
@@ -88,6 +85,8 @@ export default async function handler(req, res) {
 
       // ── Save to Freshsales if contact found ─────────────
       if (contact && (contact.first_name || contact.email || contact.mobile_number)) {
+        console.log('Saving contact to Freshsales:', JSON.stringify(contact));
+
         const fsRes = await fetch(
           `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/contacts`,
           {
@@ -101,12 +100,13 @@ export default async function handler(req, res) {
         );
 
         const fsData = await fsRes.json();
+        console.log('Freshsales response status:', fsRes.status);
+        console.log('Freshsales response:', JSON.stringify(fsData));
 
-        // Send confirmation back to Slack
         const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Unknown';
         const statusMsg = fsData.contact
           ? `✅ Contact *${name}* saved to Freshsales!`
-          : `⚠️ Could not save contact to Freshsales. Please check manually.`;
+          : `⚠️ Could not save contact to Freshsales. Error: ${JSON.stringify(fsData)}`;
 
         await fetch('https://slack.com/api/chat.postMessage', {
           method: 'POST',
