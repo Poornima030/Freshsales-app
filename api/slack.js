@@ -1,26 +1,5 @@
-import crypto from 'crypto';
-
-function verifySlackSignature(req, body) {
-  const timestamp = req.headers['x-slack-request-timestamp'];
-  const signature = req.headers['x-slack-signature'];
-  if (!timestamp || !signature) return false;
-  if (Math.abs(Date.now() / 1000 - timestamp) > 300) return false;
-  const sigBaseString = `v0:${timestamp}:${body}`;
-  const hmac = crypto.createHmac('sha256', process.env.SLACK_SIGNING_SECRET);
-  hmac.update(sigBaseString);
-  const mySignature = `v0=${hmac.digest('hex')}`;
-  return crypto.timingSafeEqual(Buffer.from(mySignature), Buffer.from(signature));
-}
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
-
-  const rawBody = JSON.stringify(req.body);
-
-  // Verify it's really from Slack
-  if (!verifySlackSignature(req, rawBody)) {
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
 
   const { type, challenge, event } = req.body;
 
@@ -30,7 +9,7 @@ export default async function handler(req, res) {
   }
 
   // Only process messages from real users (not bots)
-  if (type === 'event_callback' && event.type === 'message' && !event.bot_id && event.text) {
+  if (type === 'event_callback' && event?.type === 'message' && !event.bot_id && event.text) {
     try {
       // Step 1 — Extract contact using Groq AI
       const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
