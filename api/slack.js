@@ -11,7 +11,7 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  if (event?.type !== 'app_mention' && event?.type !== 'message') {
+  if (event?.type !== 'app_mention') {
     return res.status(200).end();
   }
 
