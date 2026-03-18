@@ -7,171 +7,44 @@ export default async function handler(req, res) {
     return res.status(200).json({ challenge });
   }
 
-  if (type === 'event_callback' && !event?.bot_id) {
-    const isMention = event?.type === 'app_mention';
-    const isMessageWithMention = event?.type === 'message' && event?.text?.includes('<@');
+  // Respond immediately to prevent Slack retries
+  res.status(200).end();
 
-    if (!isMention && !isMessageWithMention) {
-      return res.status(200).end();
-    }
+  if (type !== 'event_callback' || event?.bot_id) return;
+  if (event?.type !== 'app_mention' && event?.type !== 'message') return;
 
-    res.status(200).end();
+  // Only process if bot is mentioned
+  const hasMention = (event.text || '').includes('<@');
+  if (!hasMention) return;
 
-    try {
-      const cleanText = (event.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
+  console.log('Event received:', JSON.stringify({
+    type: event.type,
+    text: event.text,
+    hasFiles: !!(event.files?.length),
+    thread_ts: event.thread_ts,
+    ts: event.ts
+  }));
 
-      // ── Thread reply ──────────────────────────────────────
-      if (event.thread_ts && event.thread_ts !== event.ts) {
-        const parentRes = await fetch(
-          `https://slack.com/api/conversations.replies?channel=${event.channel}&ts=${event.thread_ts}&limit=1`,
-          { headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` } }
-        );
-        const parentData = await parentRes.json();
-        const parentMsg = parentData.messages?.[0];
-        if (!parentMsg) return;
+  try {
+    const cleanText = (event.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
 
-        let searchName = null;
+    // ── Thread reply ──────────────────────────────────────
+    if (event.thread_ts && event.thread_ts !== event.ts) {
+      const parentRes = await fetch(
+        `https://slack.com/api/conversations.replies?channel=${event.channel}&ts=${event.thread_ts}&limit=1`,
+        { headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` } }
+      );
+      const parentData = await parentRes.json();
+      const parentMsg = parentData.messages?.[0];
+      if (!parentMsg) return;
 
-        if (parentMsg.files && parentMsg.files.length > 0) {
-          searchName = 'recent';
-        } else if (parentMsg.text) {
-          const cleanParentText = parentMsg.text.replace(/<@[A-Z0-9]+>/g, '').trim();
-          const nameRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
-            },
-            body: JSON.stringify({
-              model: 'llama-3.3-70b-versatile',
-              messages: [{
-                role: 'user',
-                content: `Extract only the full name from this text. Return ONLY the name as plain text, nothing else: "${cleanParentText}"`
-              }],
-              temperature: 0.1,
-              max_tokens: 50
-            })
-          });
-          const nameData = await nameRes.json();
-          searchName = nameData.choices?.[0]?.message?.content?.trim();
-        }
+      let searchName = null;
 
-        if (searchName && searchName !== 'recent') {
-          const searchRes = await fetch(
-            `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/search?q=${encodeURIComponent(searchName)}&include=contact`,
-            {
-              headers: {
-                'Authorization': `Token token=${process.env.FRESHSALES_API_KEY}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          const searchData = await searchRes.json();
-          const foundContact = Array.isArray(searchData)
-            ? searchData.find(r => r.type === 'contact')
-            : null;
-
-          if (foundContact) {
-            const noteRes = await fetch(
-              `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/notes`,
-              {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Token token=${process.env.FRESHSALES_API_KEY}`
-                },
-                body: JSON.stringify({
-                  note: {
-                    description: cleanText,
-                    targetable_type: 'Contact',
-                    targetable_id: foundContact.id
-                  }
-                })
-              }
-            );
-            const noteData = await noteRes.json();
-
-            const statusMsg = noteData.note
-              ? `✅ Note added to *${foundContact.name}* in Freshsales!`
-              : `⚠️ Couldn't add the note to *${foundContact.name}* in Freshsales.`;
-
-            await fetch('https://slack.com/api/chat.postMessage', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
-              },
-              body: JSON.stringify({
-                channel: event.channel,
-                thread_ts: event.thread_ts,
-                text: statusMsg
-              })
-            });
-          }
-        }
-        return;
-      }
-
-      // ── Regular message ───────────────────────────────────
-      let contact = null;
-
-      if (event.files && event.files.length > 0) {
-        const file = event.files[0];
-        if (!file.mimetype?.startsWith('image/')) return;
-
-        const imageRes = await fetch(file.url_private_download || file.url_private, {
-          headers: {
-            'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-            'User-Agent': 'Mozilla/5.0'
-          }
-        });
-
-        if (!imageRes.ok) {
-          console.error('Image download failed:', imageRes.status, imageRes.statusText);
-          throw new Error('Could not download image from Slack');
-        }
-
-        const imageBuffer = await imageRes.arrayBuffer();
-        const base64Image = Buffer.from(imageBuffer).toString('base64');
-
-        const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
-          },
-          body: JSON.stringify({
-            model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-            messages: [{
-              role: 'user',
-              content: [
-                {
-                  type: 'image_url',
-                  image_url: { url: `data:${file.mimetype};base64,${base64Image}` }
-                },
-                {
-                  type: 'text',
-                  text: 'Extract contact information from this business card image and return ONLY a valid JSON object with exactly these fields (null if not found), no markdown, no explanation: {"first_name":null,"last_name":null,"job_title":null,"company":null,"email":null,"mobile_number":null,"address":null}'
-                }
-              ]
-            }],
-            temperature: 0.1,
-            max_tokens: 512
-          })
-        });
-
-        const groqData = await groqRes.json();
-        const raw = groqData.choices?.[0]?.message?.content || '';
-        const match = raw.match(/\{[\s\S]*\}/);
-        if (match) {
-          contact = JSON.parse(match[0]);
-          if (cleanText) {
-            contact.notes = cleanText;
-          }
-        }
-
-      } else if (cleanText) {
-        const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      if (parentMsg.files && parentMsg.files.length > 0) {
+        searchName = 'recent';
+      } else if (parentMsg.text) {
+        const cleanParentText = parentMsg.text.replace(/<@[A-Z0-9]+>/g, '').trim();
+        const nameRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -181,63 +54,202 @@ export default async function handler(req, res) {
             model: 'llama-3.3-70b-versatile',
             messages: [{
               role: 'user',
-              content: `Extract contact information from this message. Return ONLY a valid JSON object with exactly these fields (null if not found), no markdown, no explanation: {"first_name":null,"last_name":null,"job_title":null,"company":null,"email":null,"mobile_number":null,"address":null,"notes":null}\n\nFor the "notes" field: extract any commentary, context, or additional information that is NOT contact details (e.g. "Met at conference", "Follow up next week"). If no such context exists, set notes to null.\n\nMessage:\n${cleanText}`
+              content: `Extract only the full name from this text. Return ONLY the name as plain text, nothing else: "${cleanParentText}"`
             }],
             temperature: 0.1,
-            max_tokens: 512
+            max_tokens: 50
           })
         });
-
-        const groqData = await groqRes.json();
-        const raw = groqData.choices?.[0]?.message?.content || '';
-        const match = raw.match(/\{[\s\S]*\}/);
-        if (match) contact = JSON.parse(match[0]);
+        const nameData = await nameRes.json();
+        searchName = nameData.choices?.[0]?.message?.content?.trim();
       }
 
-      // ── Save to Freshsales ────────────────────────────────
-      if (contact && (contact.first_name || contact.email || contact.mobile_number)) {
-        const fsRes = await fetch(
-          `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/contacts`,
+      if (searchName && searchName !== 'recent') {
+        const searchRes = await fetch(
+          `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/search?q=${encodeURIComponent(searchName)}&include=contact`,
           {
+            headers: {
+              'Authorization': `Token token=${process.env.FRESHSALES_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        const searchData = await searchRes.json();
+        const foundContact = Array.isArray(searchData)
+          ? searchData.find(r => r.type === 'contact')
+          : null;
+
+        if (foundContact) {
+          const noteRes = await fetch(
+            `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/notes`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Token token=${process.env.FRESHSALES_API_KEY}`
+              },
+              body: JSON.stringify({
+                note: {
+                  description: cleanText,
+                  targetable_type: 'Contact',
+                  targetable_id: foundContact.id
+                }
+              })
+            }
+          );
+          const noteData = await noteRes.json();
+
+          const statusMsg = noteData.note
+            ? `✅ Note added to *${foundContact.name}* in Freshsales!`
+            : `⚠️ Couldn't add the note to *${foundContact.name}* in Freshsales.`;
+
+          await fetch('https://slack.com/api/chat.postMessage', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Token token=${process.env.FRESHSALES_API_KEY}`
+              'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
             },
-            body: JSON.stringify({ contact })
-          }
-        );
-
-        const fsData = await fsRes.json();
-        const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Unknown';
-
-        let statusMsg;
-        if (fsData.contact) {
-          statusMsg = `✅ Contact *${name}* saved to Freshsales!${contact.notes ? `\n📝 Notes: "${contact.notes}"` : ''}`;
-        } else if (JSON.stringify(fsData).includes('already exists') || JSON.stringify(fsData).includes('not unique')) {
-          statusMsg = `ℹ️ *${name}* is already in Freshsales.${contact.notes ? `\n📝 Notes: "${contact.notes}"` : ''}`;
-        } else {
-          statusMsg = `⚠️ Couldn't save *${name}* to Freshsales.`;
+            body: JSON.stringify({
+              channel: event.channel,
+              thread_ts: event.thread_ts,
+              text: statusMsg
+            })
+          });
         }
+      }
+      return;
+    }
 
-        await fetch('https://slack.com/api/chat.postMessage', {
+    // ── Regular message ───────────────────────────────────
+    let contact = null;
+
+    if (event.files && event.files.length > 0) {
+      const file = event.files[0];
+      if (!file.mimetype?.startsWith('image/')) return;
+
+      console.log('Downloading image:', file.url_private);
+
+      const imageRes = await fetch(file.url_private_download || file.url_private, {
+        headers: {
+          'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+          'User-Agent': 'Mozilla/5.0'
+        }
+      });
+
+      if (!imageRes.ok) {
+        console.error('Image download failed:', imageRes.status, imageRes.statusText);
+        throw new Error('Could not download image from Slack');
+      }
+
+      const imageBuffer = await imageRes.arrayBuffer();
+      const base64Image = Buffer.from(imageBuffer).toString('base64');
+      console.log('Image downloaded, size:', base64Image.length);
+
+      const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: `data:${file.mimetype};base64,${base64Image}` }
+              },
+              {
+                type: 'text',
+                text: 'Extract contact information from this business card image and return ONLY a valid JSON object with exactly these fields (null if not found), no markdown, no explanation: {"first_name":null,"last_name":null,"job_title":null,"company":null,"email":null,"mobile_number":null,"address":null}'
+              }
+            ]
+          }],
+          temperature: 0.1,
+          max_tokens: 512
+        })
+      });
+
+      const groqData = await groqRes.json();
+      console.log('Groq response:', JSON.stringify(groqData));
+      const raw = groqData.choices?.[0]?.message?.content || '';
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        contact = JSON.parse(match[0]);
+        if (cleanText) contact.notes = cleanText;
+      }
+
+    } else if (cleanText) {
+      console.log('Processing text:', cleanText);
+      const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [{
+            role: 'user',
+            content: `Extract contact information from this message. Return ONLY a valid JSON object with exactly these fields (null if not found), no markdown, no explanation: {"first_name":null,"last_name":null,"job_title":null,"company":null,"email":null,"mobile_number":null,"address":null,"notes":null}\n\nFor the "notes" field: extract any commentary, context, or additional information that is NOT contact details (e.g. "Met at conference", "Follow up next week"). If no such context exists, set notes to null.\n\nMessage:\n${cleanText}`
+          }],
+          temperature: 0.1,
+          max_tokens: 512
+        })
+      });
+
+      const groqData = await groqRes.json();
+      const raw = groqData.choices?.[0]?.message?.content || '';
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) contact = JSON.parse(match[0]);
+    }
+
+    console.log('Contact extracted:', JSON.stringify(contact));
+
+    // ── Save to Freshsales ────────────────────────────────
+    if (contact && (contact.first_name || contact.email || contact.mobile_number)) {
+      const fsRes = await fetch(
+        `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/contacts`,
+        {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
+            'Authorization': `Token token=${process.env.FRESHSALES_API_KEY}`
           },
-          body: JSON.stringify({
-            channel: event.channel,
-            text: statusMsg
-          })
-        });
+          body: JSON.stringify({ contact })
+        }
+      );
+
+      const fsData = await fsRes.json();
+      console.log('Freshsales response:', JSON.stringify(fsData));
+      const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Unknown';
+
+      let statusMsg;
+      if (fsData.contact) {
+        statusMsg = `✅ Contact *${name}* saved to Freshsales!${contact.notes ? `\n📝 Notes: "${contact.notes}"` : ''}`;
+      } else if (JSON.stringify(fsData).includes('already exists') || JSON.stringify(fsData).includes('not unique')) {
+        statusMsg = `ℹ️ *${name}* is already in Freshsales.${contact.notes ? `\n📝 Notes: "${contact.notes}"` : ''}`;
+      } else {
+        statusMsg = `⚠️ Couldn't save *${name}* to Freshsales.`;
       }
 
-    } catch (err) {
-      console.error('Error:', err.message);
+      await fetch('https://slack.com/api/chat.postMessage', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
+        },
+        body: JSON.stringify({
+          channel: event.channel,
+          text: statusMsg
+        })
+      });
+    } else {
+      console.log('No contact found to save');
     }
 
-  } else {
-    res.status(200).end();
+  } catch (err) {
+    console.error('Error:', err.message);
   }
 }
