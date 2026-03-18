@@ -13,7 +13,6 @@ export default async function handler(req, res) {
   if (type !== 'event_callback' || event?.bot_id) return;
   if (event?.type !== 'app_mention' && event?.type !== 'message') return;
 
-  // Only process if bot is mentioned
   const hasMention = (event.text || '').includes('<@');
   if (!hasMention) return;
 
@@ -26,7 +25,13 @@ export default async function handler(req, res) {
   }));
 
   try {
-    const cleanText = (event.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
+    let cleanText = (event.text || '')
+      .replace(/<@[A-Z0-9]+>/g, '')
+      .replace(/<mailto:[^|>]+\|([^>]+)>/g, '$1')
+      .replace(/<tel:[^|>]+\|([^>]+)>/g, '$1')
+      .replace(/<([^|>]+)\|([^>]+)>/g, '$2')
+      .replace(/<[^>]+>/g, '')
+      .trim();
 
     // ── Thread reply ──────────────────────────────────────
     if (event.thread_ts && event.thread_ts !== event.ts) {
@@ -43,7 +48,14 @@ export default async function handler(req, res) {
       if (parentMsg.files && parentMsg.files.length > 0) {
         searchName = 'recent';
       } else if (parentMsg.text) {
-        const cleanParentText = parentMsg.text.replace(/<@[A-Z0-9]+>/g, '').trim();
+        const cleanParentText = parentMsg.text
+          .replace(/<@[A-Z0-9]+>/g, '')
+          .replace(/<mailto:[^|>]+\|([^>]+)>/g, '$1')
+          .replace(/<tel:[^|>]+\|([^>]+)>/g, '$1')
+          .replace(/<([^|>]+)\|([^>]+)>/g, '$2')
+          .replace(/<[^>]+>/g, '')
+          .trim();
+
         const nameRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
           headers: {
