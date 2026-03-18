@@ -7,14 +7,16 @@ export default async function handler(req, res) {
     return res.status(200).json({ challenge });
   }
 
-  // Respond immediately to prevent Slack retries
-  res.status(200).end();
+  if (type !== 'event_callback' || event?.bot_id) {
+    return res.status(200).end();
+  }
 
-  if (type !== 'event_callback' || event?.bot_id) return;
-  if (event?.type !== 'app_mention' && event?.type !== 'message') return;
+  if (event?.type !== 'app_mention' && event?.type !== 'message') {
+    return res.status(200).end();
+  }
 
   const hasMention = (event.text || '').includes('<@');
-  if (!hasMention) return;
+  if (!hasMention) return res.status(200).end();
 
   console.log('Event received:', JSON.stringify({
     type: event.type,
@@ -41,7 +43,7 @@ export default async function handler(req, res) {
       );
       const parentData = await parentRes.json();
       const parentMsg = parentData.messages?.[0];
-      if (!parentMsg) return;
+      if (!parentMsg) return res.status(200).end();
 
       let searchName = null;
 
@@ -129,7 +131,7 @@ export default async function handler(req, res) {
           });
         }
       }
-      return;
+      return res.status(200).end();
     }
 
     // ── Regular message ───────────────────────────────────
@@ -137,7 +139,7 @@ export default async function handler(req, res) {
 
     if (event.files && event.files.length > 0) {
       const file = event.files[0];
-      if (!file.mimetype?.startsWith('image/')) return;
+      if (!file.mimetype?.startsWith('image/')) return res.status(200).end();
 
       console.log('Downloading image:', file.url_private);
 
@@ -150,7 +152,7 @@ export default async function handler(req, res) {
 
       if (!imageRes.ok) {
         console.error('Image download failed:', imageRes.status, imageRes.statusText);
-        throw new Error('Could not download image from Slack');
+        return res.status(200).end();
       }
 
       const imageBuffer = await imageRes.arrayBuffer();
@@ -184,7 +186,7 @@ export default async function handler(req, res) {
       });
 
       const groqData = await groqRes.json();
-      console.log('Groq response:', JSON.stringify(groqData));
+      console.log('Groq image response:', JSON.stringify(groqData));
       const raw = groqData.choices?.[0]?.message?.content || '';
       const match = raw.match(/\{[\s\S]*\}/);
       if (match) {
@@ -212,6 +214,7 @@ export default async function handler(req, res) {
       });
 
       const groqData = await groqRes.json();
+      console.log('Groq text response:', JSON.stringify(groqData));
       const raw = groqData.choices?.[0]?.message?.content || '';
       const match = raw.match(/\{[\s\S]*\}/);
       if (match) contact = JSON.parse(match[0]);
@@ -219,7 +222,6 @@ export default async function handler(req, res) {
 
     console.log('Contact extracted:', JSON.stringify(contact));
 
-    // ── Save to Freshsales ────────────────────────────────
     if (contact && (contact.first_name || contact.email || contact.mobile_number)) {
       const fsRes = await fetch(
         `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/contacts`,
@@ -264,4 +266,6 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error('Error:', err.message);
   }
+
+  return res.status(200).end();
 }
