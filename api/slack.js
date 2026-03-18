@@ -7,12 +7,14 @@ export default async function handler(req, res) {
     return res.status(200).json({ challenge });
   }
 
+  // Respond to Slack immediately to prevent duplicate events
+  res.status(200).end();
+
   if (type === 'event_callback' && event?.type === 'message' && !event.bot_id) {
     try {
 
       // ── Thread reply — add as notes to existing contact ──
       if (event.thread_ts && event.thread_ts !== event.ts) {
-        // This is a thread reply — fetch parent message
         const parentRes = await fetch(
           `https://slack.com/api/conversations.replies?channel=${event.channel}&ts=${event.thread_ts}&limit=1`,
           {
@@ -22,17 +24,13 @@ export default async function handler(req, res) {
         const parentData = await parentRes.json();
         const parentMsg = parentData.messages?.[0];
 
-        if (!parentMsg) return res.status(200).end();
+        if (!parentMsg) return;
 
-        // Find contact in Freshsales by searching parent message context
-        // Extract name from parent message or its files
         let searchName = null;
 
         if (parentMsg.files && parentMsg.files.length > 0) {
-          // Parent had an image — search by recent contacts
           searchName = 'recent';
         } else if (parentMsg.text) {
-          // Extract name from parent text using Groq
           const nameRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: {
@@ -54,7 +52,6 @@ export default async function handler(req, res) {
         }
 
         if (searchName && searchName !== 'recent') {
-          // Search for contact in Freshsales
           const searchRes = await fetch(
             `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/search?q=${encodeURIComponent(searchName)}&include=contact`,
             {
@@ -65,15 +62,12 @@ export default async function handler(req, res) {
             }
           );
           const searchData = await searchRes.json();
-          console.log('Search response:', JSON.stringify(searchData));
 
-          // Find matching contact
           const foundContact = Array.isArray(searchData)
             ? searchData.find(r => r.type === 'contact')
             : null;
 
           if (foundContact) {
-            // Add thread reply as a note to this contact
             const noteRes = await fetch(
               `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/notes`,
               {
@@ -92,11 +86,10 @@ export default async function handler(req, res) {
               }
             );
             const noteData = await noteRes.json();
-            console.log('Note response:', JSON.stringify(noteData));
 
             const statusMsg = noteData.note
               ? `✅ Note added to *${foundContact.name}* in Freshsales!`
-              : `⚠️ Could not add note. Error: ${JSON.stringify(noteData)}`;
+              : `⚠️ Couldn't add the note to ${foundContact.name}. Please add it manually in Freshsales.`;
 
             await fetch('https://slack.com/api/chat.postMessage', {
               method: 'POST',
@@ -113,7 +106,7 @@ export default async function handler(req, res) {
           }
         }
 
-        return res.status(200).end();
+        return;
       }
 
       // ── Regular message (not a thread reply) ────────────
@@ -121,7 +114,7 @@ export default async function handler(req, res) {
 
       if (event.files && event.files.length > 0) {
         const file = event.files[0];
-        if (!file.mimetype?.startsWith('image/')) return res.status(200).end();
+        if (!file.mimetype?.startsWith('image/')) return;
 
         const imageRes = await fetch(file.url_private, {
           headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
@@ -191,8 +184,6 @@ export default async function handler(req, res) {
 
       // ── Save to Freshsales ───────────────────────────────
       if (contact && (contact.first_name || contact.email || contact.mobile_number)) {
-        console.log('Saving contact:', JSON.stringify(contact));
-
         const fsRes = await fetch(
           `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/contacts`,
           {
@@ -206,12 +197,16 @@ export default async function handler(req, res) {
         );
 
         const fsData = await fsRes.json();
-        console.log('Freshsales response:', JSON.stringify(fsData));
-
         const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Unknown';
-        const statusMsg = fsData.contact
-          ? `✅ Contact *${name}* saved to Freshsales!${contact.notes ? ` Notes: "${contact.notes}"` : ''}`
-          : `⚠️ Could not save contact. Error: ${JSON.stringify(fsData)}`;
+
+        let statusMsg;
+        if (fsData.contact) {
+          statusMsg = `✅ Contact *${name}* saved to Freshsales!${contact.notes ? `\n📝 Notes: "${contact.notes}"` : ''}`;
+        } else if (JSON.stringify(fsData).includes('already exists') || JSON.stringify(fsData).includes('not unique')) {
+          statusMsg = `ℹ️ *${name}* is already in Freshsales.${contact.notes ? `\n📝 Notes: "${contact.notes}"` : ''}`;
+        } else {
+          statusMsg = `⚠️ Couldn't save *${name}* to Freshsales. Please add this contact manually.`;
+        }
 
         await fetch('https://slack.com/api/chat.postMessage', {
           method: 'POST',
@@ -230,6 +225,4 @@ export default async function handler(req, res) {
       console.error('Error:', err.message);
     }
   }
-
-  return res.status(200).end();
 }
