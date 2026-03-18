@@ -119,9 +119,18 @@ export default async function handler(req, res) {
         const file = event.files[0];
         if (!file.mimetype?.startsWith('image/')) return;
 
-        const imageRes = await fetch(file.url_private, {
-          headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+        const imageRes = await fetch(file.url_private_download || file.url_private, {
+          headers: {
+            'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+            'User-Agent': 'Mozilla/5.0'
+          }
         });
+
+        if (!imageRes.ok) {
+          console.error('Image download failed:', imageRes.status, imageRes.statusText);
+          throw new Error('Could not download image from Slack');
+        }
+
         const imageBuffer = await imageRes.arrayBuffer();
         const base64Image = Buffer.from(imageBuffer).toString('base64');
 
