@@ -3,23 +3,125 @@ export default async function handler(req, res) {
 
   const { type, challenge, event } = req.body;
 
-  // Slack URL verification handshake
   if (type === 'url_verification') {
     return res.status(200).json({ challenge });
   }
 
-  // Only process messages from real users (not bots)
   if (type === 'event_callback' && event?.type === 'message' && !event.bot_id) {
     try {
+
+      // ── Thread reply — add as notes to existing contact ──
+      if (event.thread_ts && event.thread_ts !== event.ts) {
+        // This is a thread reply — fetch parent message
+        const parentRes = await fetch(
+          `https://slack.com/api/conversations.replies?channel=${event.channel}&ts=${event.thread_ts}&limit=1`,
+          {
+            headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+          }
+        );
+        const parentData = await parentRes.json();
+        const parentMsg = parentData.messages?.[0];
+
+        if (!parentMsg) return res.status(200).end();
+
+        // Find contact in Freshsales by searching parent message context
+        // Extract name from parent message or its files
+        let searchName = null;
+
+        if (parentMsg.files && parentMsg.files.length > 0) {
+          // Parent had an image — search by recent contacts
+          searchName = 'recent';
+        } else if (parentMsg.text) {
+          // Extract name from parent text using Groq
+          const nameRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
+            },
+            body: JSON.stringify({
+              model: 'llama-3.3-70b-versatile',
+              messages: [{
+                role: 'user',
+                content: `Extract only the full name from this text. Return ONLY the name as plain text, nothing else: "${parentMsg.text}"`
+              }],
+              temperature: 0.1,
+              max_tokens: 50
+            })
+          });
+          const nameData = await nameRes.json();
+          searchName = nameData.choices?.[0]?.message?.content?.trim();
+        }
+
+        if (searchName && searchName !== 'recent') {
+          // Search for contact in Freshsales
+          const searchRes = await fetch(
+            `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/search?q=${encodeURIComponent(searchName)}&include=contact`,
+            {
+              headers: {
+                'Authorization': `Token token=${process.env.FRESHSALES_API_KEY}`,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+          const searchData = await searchRes.json();
+          console.log('Search response:', JSON.stringify(searchData));
+
+          // Find matching contact
+          const foundContact = Array.isArray(searchData)
+            ? searchData.find(r => r.type === 'contact')
+            : null;
+
+          if (foundContact) {
+            // Add thread reply as a note to this contact
+            const noteRes = await fetch(
+              `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/notes`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Token token=${process.env.FRESHSALES_API_KEY}`
+                },
+                body: JSON.stringify({
+                  note: {
+                    description: event.text,
+                    targetable_type: 'Contact',
+                    targetable_id: foundContact.id
+                  }
+                })
+              }
+            );
+            const noteData = await noteRes.json();
+            console.log('Note response:', JSON.stringify(noteData));
+
+            const statusMsg = noteData.note
+              ? `✅ Note added to *${foundContact.name}* in Freshsales!`
+              : `⚠️ Could not add note. Error: ${JSON.stringify(noteData)}`;
+
+            await fetch('https://slack.com/api/chat.postMessage', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
+              },
+              body: JSON.stringify({
+                channel: event.channel,
+                thread_ts: event.thread_ts,
+                text: statusMsg
+              })
+            });
+          }
+        }
+
+        return res.status(200).end();
+      }
+
+      // ── Regular message (not a thread reply) ────────────
       let contact = null;
 
-      // ── Case 1: Image uploaded ──────────────────────────
       if (event.files && event.files.length > 0) {
         const file = event.files[0];
-
-        if (!file.mimetype?.startsWith('image/')) {
-          return res.status(200).end();
-        }
+        if (!file.mimetype?.startsWith('image/')) return res.status(200).end();
 
         const imageRes = await fetch(file.url_private, {
           headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
@@ -56,9 +158,13 @@ export default async function handler(req, res) {
         const groqData = await groqRes.json();
         const raw = groqData.choices?.[0]?.message?.content || '';
         const match = raw.match(/\{[\s\S]*\}/);
-        if (match) contact = JSON.parse(match[0]);
+        if (match) {
+          contact = JSON.parse(match[0]);
+          if (event.text && event.text.trim()) {
+            contact.notes = event.text.trim();
+          }
+        }
 
-      // ── Case 2: Text message ────────────────────────────
       } else if (event.text && event.text.trim()) {
         const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
@@ -70,7 +176,7 @@ export default async function handler(req, res) {
             model: 'llama-3.3-70b-versatile',
             messages: [{
               role: 'user',
-              content: `Extract contact information from this message and return ONLY a valid JSON object with exactly these fields (null if not found), no markdown, no explanation: {"first_name":null,"last_name":null,"job_title":null,"company":null,"email":null,"mobile_number":null,"address":null}\n\nMessage:\n${event.text}`
+              content: `Extract contact information from this message. Return ONLY a valid JSON object with exactly these fields (null if not found), no markdown, no explanation: {"first_name":null,"last_name":null,"job_title":null,"company":null,"email":null,"mobile_number":null,"address":null,"notes":null}\n\nFor the "notes" field: extract any commentary, context, or additional information that is NOT contact details (e.g. "Met at conference", "Follow up next week"). If no such context exists, set notes to null.\n\nMessage:\n${event.text}`
             }],
             temperature: 0.1,
             max_tokens: 512
@@ -83,9 +189,9 @@ export default async function handler(req, res) {
         if (match) contact = JSON.parse(match[0]);
       }
 
-      // ── Save to Freshsales if contact found ─────────────
+      // ── Save to Freshsales ───────────────────────────────
       if (contact && (contact.first_name || contact.email || contact.mobile_number)) {
-        console.log('Saving contact to Freshsales:', JSON.stringify(contact));
+        console.log('Saving contact:', JSON.stringify(contact));
 
         const fsRes = await fetch(
           `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/contacts`,
@@ -100,13 +206,12 @@ export default async function handler(req, res) {
         );
 
         const fsData = await fsRes.json();
-        console.log('Freshsales response status:', fsRes.status);
         console.log('Freshsales response:', JSON.stringify(fsData));
 
         const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Unknown';
         const statusMsg = fsData.contact
-          ? `✅ Contact *${name}* saved to Freshsales!`
-          : `⚠️ Could not save contact to Freshsales. Error: ${JSON.stringify(fsData)}`;
+          ? `✅ Contact *${name}* saved to Freshsales!${contact.notes ? ` Notes: "${contact.notes}"` : ''}`
+          : `⚠️ Could not save contact. Error: ${JSON.stringify(fsData)}`;
 
         await fetch('https://slack.com/api/chat.postMessage', {
           method: 'POST',
