@@ -177,6 +177,13 @@ ${cleanText}` }],
       delete contactPayload.notes;
       delete contactPayload.website;
 
+      // Auto-generate placeholder email if no email provided (Freshsales requires unique email)
+      if (!contactPayload.email) {
+        const namePart = (contact.first_name || contact.last_name || 'contact').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const timestamp = Date.now();
+        contactPayload.email = `${namePart}.${timestamp}@placeholder.com`;
+      }
+
       // Remove null/undefined values
       Object.keys(contactPayload).forEach(key => {
         if (contactPayload[key] === null || contactPayload[key] === undefined) {
