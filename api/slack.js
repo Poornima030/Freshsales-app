@@ -1,5 +1,13 @@
+// Track processed events to prevent duplicate responses
+const processedEvents = new Set();
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
+
+  // If Slack is retrying, ignore it — we already processed this event
+  if (req.headers['x-slack-retry-num']) {
+    return res.status(200).end();
+  }
 
   const { type, challenge, event } = req.body;
 
@@ -14,6 +22,16 @@ export default async function handler(req, res) {
   if (event?.type !== 'app_mention') {
     return res.status(200).end();
   }
+
+  // Deduplicate using event timestamp + channel
+  const eventId = `${event.channel}-${event.ts}`;
+  if (processedEvents.has(eventId)) {
+    return res.status(200).end();
+  }
+  processedEvents.add(eventId);
+
+  // Clean up old entries after 60 seconds to prevent memory leak
+  setTimeout(() => processedEvents.delete(eventId), 60000);
 
   const hasMention = (event.text || '').includes('<@');
   if (!hasMention) return res.status(200).end();
