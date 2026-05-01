@@ -30,15 +30,13 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
   processedEvents.add(eventId);
-
-  // Clean up old entries after 60 seconds to prevent memory leak
   setTimeout(() => processedEvents.delete(eventId), 60000);
 
   const hasMention = (event.text || '').includes('<@');
   if (!hasMention) return res.status(200).end();
 
   try {
-    // Extract URLs before cleaning (Slack wraps URLs in < > brackets)
+    // Extract URLs before cleaning
     const urlRegex = /<(https?:\/\/[^|>]+)(?:\|[^>]*)?>/g;
     const extractedUrls = [];
     let urlMatch;
@@ -132,14 +130,26 @@ export default async function handler(req, res) {
       const file = event.files[0];
       if (!file.mimetype?.startsWith('image/')) return res.status(200).end();
 
+      // STEP 1: Download image from Slack
+      console.log('IMAGE STEP 1: Downloading image from Slack...');
       const imageRes = await fetch(file.url_private_download || file.url_private, {
         headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`, 'User-Agent': 'Mozilla/5.0' }
       });
-      if (!imageRes.ok) return res.status(200).end();
+      console.log('IMAGE STEP 1 result: status=' + imageRes.status + ' content-type=' + imageRes.headers.get('content-type'));
 
+      if (!imageRes.ok) {
+        console.log('IMAGE STEP 1 FAILED: Could not download image');
+        return res.status(200).end();
+      }
+
+      // STEP 2: Convert to base64
+      console.log('IMAGE STEP 2: Converting to base64...');
       const imageBuffer = await imageRes.arrayBuffer();
       const base64Image = Buffer.from(imageBuffer).toString('base64');
+      console.log('IMAGE STEP 2 result: base64 length=' + base64Image.length);
 
+      // STEP 3: Send to Groq
+      console.log('IMAGE STEP 3: Sending to Groq AI...');
       const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` },
@@ -152,7 +162,11 @@ export default async function handler(req, res) {
           temperature: 0.1, max_tokens: 512
         })
       });
-      const groqData = await groqRes.json();
+      console.log('IMAGE STEP 3 result: Groq status=' + groqRes.status);
+      const groqRaw = await groqRes.text();
+      console.log('IMAGE STEP 3 response: ' + groqRaw.substring(0, 300));
+      const groqData = JSON.parse(groqRaw);
+
       const raw = groqData.choices?.[0]?.message?.content || '';
       const match = raw.match(/\{[\s\S]*\}/);
       if (match) { contact = JSON.parse(match[0]); if (cleanText) contact.notes = cleanText; }
@@ -183,37 +197,31 @@ ${cleanText}` }],
       if (match) contact = JSON.parse(match[0]);
     }
 
-    // Add any URLs extracted from Slack formatting that AI might have missed
     if (contact && extractedUrls.length > 0 && !contact.website) {
       contact.website = extractedUrls[0];
     }
 
     if (contact && (contact.first_name || contact.last_name || contact.email || contact.mobile_number)) {
-      // Separate notes and website from contact payload
       const notes = contact.notes;
       const website = contact.website;
       const contactPayload = { ...contact };
       delete contactPayload.notes;
       delete contactPayload.website;
 
-      // Auto-generate placeholder email if no email provided (Freshsales requires unique email)
       if (!contactPayload.email) {
         const namePart = (contact.first_name || contact.last_name || 'contact').toLowerCase().replace(/[^a-z0-9]/g, '');
         const timestamp = Date.now();
         contactPayload.email = `${namePart}.${timestamp}@placeholder.com`;
       }
 
-      // Remove null/undefined values
       Object.keys(contactPayload).forEach(key => {
         if (contactPayload[key] === null || contactPayload[key] === undefined) {
           delete contactPayload[key];
         }
       });
 
-      // Display name for Slack messages
       const displayName = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Unknown';
 
-      // Save contact to Freshsales
       const fsRes = await fetch(
         `https://${process.env.FRESHSALES_DOMAIN}.myfreshworks.com/crm/sales/api/contacts`,
         {
@@ -226,7 +234,6 @@ ${cleanText}` }],
 
       let statusMsg;
       if (fsData.contact) {
-        // Contact created — now add notes + link as a Freshsales Note
         const noteParts = [];
         if (notes) noteParts.push(notes);
         if (website) noteParts.push(`🔗 Link: ${website}`);
