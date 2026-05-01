@@ -4,8 +4,9 @@ const processedEvents = new Set();
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
 
-  // If Slack is retrying, ignore it — we already processed this event
-  if (req.headers['x-slack-retry-num']) {
+  // Ignore retries after the first one to prevent duplicate responses
+  const retryNum = parseInt(req.headers['x-slack-retry-num'] || '0');
+  if (retryNum > 1) {
     return res.status(200).end();
   }
 
