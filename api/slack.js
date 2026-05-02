@@ -1,3 +1,5 @@
+import sharp from 'sharp';
+
 // Track processed events to prevent duplicate responses
 const processedEvents = new Set();
 
@@ -135,18 +137,18 @@ export default async function handler(req, res) {
       const imageRes = await fetch(file.url_private_download || file.url_private, {
         headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`, 'User-Agent': 'Mozilla/5.0' }
       });
-      console.log('IMAGE STEP 1 result: status=' + imageRes.status + ' content-type=' + imageRes.headers.get('content-type'));
+      console.log('IMAGE STEP 1 result: status=' + imageRes.status);
+      if (!imageRes.ok) return res.status(200).end();
 
-      if (!imageRes.ok) {
-        console.log('IMAGE STEP 1 FAILED: Could not download image');
-        return res.status(200).end();
-      }
-
-      // STEP 2: Convert to base64
-      console.log('IMAGE STEP 2: Converting to base64...');
+      // STEP 2: Compress image to max 1200px wide and convert to JPEG to reduce size
+      console.log('IMAGE STEP 2: Compressing image...');
       const imageBuffer = await imageRes.arrayBuffer();
-      const base64Image = Buffer.from(imageBuffer).toString('base64');
-      console.log('IMAGE STEP 2 result: base64 length=' + base64Image.length);
+      const compressedBuffer = await sharp(Buffer.from(imageBuffer))
+        .resize({ width: 1200, withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+      const base64Image = compressedBuffer.toString('base64');
+      console.log('IMAGE STEP 2 result: compressed base64 length=' + base64Image.length);
 
       // STEP 3: Send to Groq
       console.log('IMAGE STEP 3: Sending to Groq AI...');
@@ -156,7 +158,7 @@ export default async function handler(req, res) {
         body: JSON.stringify({
           model: 'meta-llama/llama-4-scout-17b-16e-instruct',
           messages: [{ role: 'user', content: [
-            { type: 'image_url', image_url: { url: `data:${file.mimetype};base64,${base64Image}` } },
+            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64Image}` } },
             { type: 'text', text: 'Extract contact information from this business card image and return ONLY a valid JSON object with exactly these fields (null if not found), no markdown, no explanation: {"first_name":null,"last_name":null,"job_title":null,"company":null,"email":null,"mobile_number":null,"address":null}' }
           ]}],
           temperature: 0.1, max_tokens: 512
